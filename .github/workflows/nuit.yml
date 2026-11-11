@@ -1,0 +1,74 @@
+# Ce dépôt ne contient que cet horaire. Le code exécuté vit ailleurs.
+#
+# Secrets (environnement « nuit », branche main seulement) : KIT_DEPOT, KIT_CLE, S1, S2, S3, CLE_JOURNAL.
+# Variables de dépôt : ACTIF (1 = l'horaire de nuit tourne), ETAPE2 (1 = étape 2 allumée).
+# Rien n'est écrit en clair dans ce journal : statut par étape seulement.
+
+name: nuit
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+    # Le 1er du mois : garde l'horaire en vie (GitHub le coupe après 60 jours sans activité).
+    - cron: "0 14 1 * *"
+  workflow_dispatch:
+    inputs:
+      essai:
+        description: "Lecture seule (aucune écriture)"
+        type: boolean
+        default: true
+
+permissions: {}
+
+jobs:
+  nuit:
+    # Interrupteur : la nuit programmée ne part que si la variable de dépôt ACTIF vaut 1. Le lancement manuel passe toujours.
+    if: github.event_name == 'workflow_dispatch' || (vars.ACTIF == '1' && github.event.schedule != '0 14 1 * *')
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    environment: nuit
+    concurrency:
+      group: nuit
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ secrets.KIT_DEPOT }}
+          ssh-key: ${{ secrets.KIT_CLE }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: echo "DEBUT_JOB=$(date +%s)" >> "$GITHUB_ENV"
+      - name: installation
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund >/dev/null 2>&1 || { echo "installation en échec"; exit 1; }
+      - name: nuit
+        env:
+          S1: ${{ secrets.S1 }}
+          S2: ${{ secrets.S2 }}
+          S3: ${{ secrets.S3 }}
+          CLE_JOURNAL: ${{ secrets.CLE_JOURNAL }}
+          ETAPE2: ${{ vars.ETAPE2 }}
+          ESSAI: ${{ github.event_name == 'workflow_dispatch' && inputs.essai }}
+        run: |
+          if [ "$ESSAI" = true ]; then bash run.sh essai; else bash run.sh nuit; fi
+      - name: journal
+        if: always() && hashFiles('journal.enc') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: journal
+          path: journal.enc
+          retention-days: 14
+          if-no-files-found: ignore
+
+  garde-vie:
+    if: github.event.schedule == '0 14 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/nuit.yml/enable" >/dev/null && echo "ok"
